@@ -1,4 +1,3 @@
-from collections import Counter
 import logging
 import re
 from urllib.parse import urljoin
@@ -10,11 +9,11 @@ from tqdm import tqdm
 from configs import configure_argument_parser, configure_logging
 from constants import (
     BASE_DIR, DL_LINK_PATTERN,
-    MAIN_DOC_URL, MAIN_PEPS_URL,
-    OutputTypeChoices
+    EXPECTED_STATUS, MAIN_DOC_URL,
+    MAIN_PEPS_URL, OutputTypeChoices
     )
 from outputs import control_output
-from utils import find_tag, get_response, get_status
+from utils import find_tag, get_response
 
 
 def whats_new(session):
@@ -112,7 +111,9 @@ def download(session):
     downloads_dir = BASE_DIR / 'downloads'
     downloads_dir.mkdir(exist_ok=True)
     archive_path = downloads_dir / filename
-    response = session.get(archive_url)
+    response = get_response(session, archive_url)
+    if not response:
+        return
     with open(archive_path, 'wb') as file:
         file.write(response.content)
     logging.info(f'Архив был загружен и сохранён: {archive_path}')
@@ -120,38 +121,50 @@ def download(session):
 
 def pep(session):
     response = get_response(session, MAIN_PEPS_URL)
-    if not response:
-        return
+    if response is None:
+        return None
     soup = BeautifulSoup(response.text, features='lxml')
-    num_idx_section = find_tag(
-        soup,
-        'section',
-        attrs={'id': 'index-by-category'}
-        )
-    table_body = find_tag(num_idx_section, 'tbody')
-    peps = table_body.find_all(
-        'tr',
-        attrs={'class': re.compile(r'row-(odd|even)')}
-        )
-    actual_statuses = Counter()
-    results = [('Статус', 'Количество')]
-    for pep in tqdm(peps):
-        abbr = find_tag(pep, 'abbr').text
-        preview_status = abbr[1:]
-        pep_link = find_tag(pep, 'a')['href']
-        pep_url = urljoin(MAIN_PEPS_URL, pep_link)
-        actual_status = get_status(
-            session,
-            preview_status,
-            pep_url
-            )
-        actual_statuses[actual_status] += 1
-    for status, quantity in actual_statuses.items():
-        results.append((status, quantity))
-    results.append(
-        ('Total', sum(actual_statuses.values()))
-        )
+    peps = soup.find_all(attrs={'class': re.compile('table*.')})
+    results = [('Cтатус', 'Количество')]
+    statuses_count = {}
+    different_statuses_logs = []
 
+    for pep in tqdm(peps):
+        tr_tags = pep.tbody.find_all('tr')
+        for tr_tag in tqdm(tr_tags):
+            preview_status = tr_tag.text[1:2]
+            link = tr_tag.select_one('[href]')['href']
+            page_pep_url = urljoin(MAIN_PEPS_URL, link)
+            response = get_response(session, page_pep_url)
+            if response is None:
+                continue
+            soup = BeautifulSoup(response.text, features='lxml')
+            page_status = soup.find(
+                string='Status').findNext('dd').text
+
+            status = EXPECTED_STATUS.get(preview_status, '')
+            if page_status not in status:
+                log = f'''
+                Несовпадающие статусы:
+                {page_pep_url}
+                Статус в карточке: {page_status}
+                Ожидаемые статусы: {status}'''
+                different_statuses_logs.append(log)
+
+            if preview_status not in EXPECTED_STATUS.keys():
+                preview_status = ''
+            if statuses_count.get(page_status):
+                statuses_count[page_status] += 1
+            else:
+                statuses_count[page_status] = 1
+
+    for log in different_statuses_logs:
+        logging.info(log)
+
+    results.extend(
+        [(key, value) for key, value in statuses_count.items()]
+        )
+    results.append(('Total', sum(statuses_count.values())))
     return results
 
 

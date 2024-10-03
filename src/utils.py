@@ -1,9 +1,8 @@
 import logging
 
-from bs4 import BeautifulSoup
 from requests import RequestException
 
-from constants import ENCODING, EXPECTED_STATUS
+from constants import ENCODING
 from exceptions import ParserFindTagException
 
 
@@ -26,20 +25,3 @@ def find_tag(soup, tag, attrs=None):
         logging.error(error_msg, stack_info=True)
         raise ParserFindTagException(error_msg)
     return searched_tag
-
-
-def get_status(session, preview_status, url):
-    response = get_response(session, url)
-    soup = BeautifulSoup(response.text, features='lxml')
-    word_status_tag = soup.find(string='Status').parent
-    status_tag = word_status_tag.find_next_sibling('dd')
-    actual_status = status_tag.abbr.text
-    expected_statuses = EXPECTED_STATUS[preview_status]
-    if actual_status not in expected_statuses:
-        error_msg = (
-            f'Несовпадающие статусы:\n{url}\n'
-            f'Статус в карточке: {actual_status}\n'
-            f'Ожидаемые статусы: {expected_statuses}'
-        )
-        logging.error(error_msg)
-    return actual_status
